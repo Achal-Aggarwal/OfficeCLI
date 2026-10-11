@@ -671,6 +671,8 @@ public partial class PowerPointHandler
         // Collect all content elements in z-order (as they appear in XML)
         foreach (var element in shapeTree.ChildElements)
         {
+            // <p:cNvPr hidden="1"> — PowerPoint does not draw the shape (issue #466).
+            if (SlideComposition.IsHidden(element)) continue;
             switch (element)
             {
                 case Shape shape:
@@ -800,6 +802,10 @@ public partial class PowerPointHandler
 
         foreach (var element in shapeTree.ChildElements)
         {
+            // CONSISTENCY(hidden-gate): a decoration marked hidden stays hidden in the
+            // composition too — <p:cNvPr hidden="1"> means the shape is not drawn,
+            // wherever it lives, so this pass must not paint it onto the slide.
+            if (SlideComposition.IsHidden(element)) continue;
             switch (element)
             {
                 case Shape shape:
@@ -829,6 +835,7 @@ public partial class PowerPointHandler
         // Also render pictures from layout/master (logos, decorative images)
         foreach (var pic in shapeTree.Elements<Picture>())
         {
+            if (SlideComposition.IsHidden(pic)) continue;
             RenderPicture(sb, pic, part, themeColors);
         }
     }
