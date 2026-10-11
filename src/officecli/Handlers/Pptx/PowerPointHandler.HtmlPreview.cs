@@ -762,19 +762,27 @@ public partial class PowerPointHandler
             }
         }
 
-        // Render shapes from SlideLayout (higher priority)
+        // CONSISTENCY(layer-paint-order): the two inherited passes are emitted
+        // master first, layout second, because that emission order IS the
+        // stacking order — the slide markup carries no z-index, so a shape's
+        // position in the DOM is the only thing that decides what covers what.
+        // PowerPoint paints master (bottom) → layout → slide (top); the calls
+        // used to run layout-then-master, which lifted every master decoration
+        // ABOVE the layout's shapes. Covering a master decoration with an opaque
+        // layout-level shape is ordinary authoring, so the preview was showing
+        // shapes PowerPoint deliberately hides (issue #466, symptom 3).
         var layoutPart = slidePart.SlideLayoutPart;
-        if (layoutPart != null)
-            RenderInheritedShapes(sb, layoutPart.SlideLayout?.CommonSlideData?.ShapeTree, layoutPart, slidePlaceholders, themeColors, slideNum);
-
-        // Render shapes from SlideMaster (lower priority, only if not in layout).
-        // R12-2: <p:sld showMasterSp="0"> suppresses master-level decoration.
-        // (Layout placeholders above still render — matches PowerPoint, where
-        // the flag only governs the master's own shapes.)
-        var showMasterSp = GetSlide(slidePart).ShowMasterShapes?.Value ?? true;
         var masterPart = layoutPart?.SlideMasterPart;
+
+        // R12-2: <p:sld showMasterSp="0"> suppresses master-level decoration.
+        // The flag only governs the master's own shapes — layout placeholders
+        // still render.
+        var showMasterSp = GetSlide(slidePart).ShowMasterShapes?.Value ?? true;
         if (masterPart != null && showMasterSp)
             RenderInheritedShapes(sb, masterPart.SlideMaster?.CommonSlideData?.ShapeTree, masterPart, slidePlaceholders, themeColors, slideNum);
+
+        if (layoutPart != null)
+            RenderInheritedShapes(sb, layoutPart.SlideLayout?.CommonSlideData?.ShapeTree, layoutPart, slidePlaceholders, themeColors, slideNum);
     }
 
     // RenderInheritedShapes — render the layout/master shapes that the slide

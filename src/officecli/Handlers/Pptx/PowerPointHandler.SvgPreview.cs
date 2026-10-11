@@ -199,15 +199,20 @@ public partial class PowerPointHandler
             }
         }
 
+        // CONSISTENCY(layer-paint-order): master first, layout second — SVG paints
+        // in document order, so this is what puts master decoration at the bottom
+        // of the stack, the way PowerPoint composes the slide (issue #466,
+        // symptom 3). See PowerPointHandler.HtmlPreview.cs for the HTML twin.
         var layoutPart = slidePart.SlideLayoutPart;
-        if (layoutPart != null)
-            RenderInheritedShapesSvg(sb, defs, ref defId, layoutPart.SlideLayout?.CommonSlideData?.ShapeTree,
-                layoutPart, slidePlaceholders, themeColors);
-
         var masterPart = layoutPart?.SlideMasterPart;
+
         if (masterPart != null)
             RenderInheritedShapesSvg(sb, defs, ref defId, masterPart.SlideMaster?.CommonSlideData?.ShapeTree,
                 masterPart, slidePlaceholders, themeColors);
+
+        if (layoutPart != null)
+            RenderInheritedShapesSvg(sb, defs, ref defId, layoutPart.SlideLayout?.CommonSlideData?.ShapeTree,
+                layoutPart, slidePlaceholders, themeColors);
     }
 
     private void RenderInheritedShapesSvg(StringBuilder sb, StringBuilder defs, ref int defId,
