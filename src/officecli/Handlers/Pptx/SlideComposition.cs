@@ -25,8 +25,14 @@ namespace OfficeCli.Handlers;
 /// This module is the one place that resolves the model; consumers read from
 /// it instead of improvising. Scope of this first extraction: placeholder
 /// slot matching, inherited-frame resolution and its provenance. Later steps
-/// per issue #466: layer paint order, hf/showMasterSp/hidden gates, effective
+/// per issue #466: layer paint order, hf/showMasterSp gates, effective
 /// fill inheritance.
+///
+/// Visibility gates: a shape marked &lt;p:cNvPr hidden="1"&gt; is not drawn. The
+/// attribute lives on &lt;a:CT_NonVisualDrawingProps&gt;, so it travels with the
+/// shape at every layer of the composition — a hidden master decoration would
+/// otherwise leak onto every slide — and it is not the same bit as the
+/// slide-level &lt;p:sld show="0"&gt; that hides a slide from a show.
 ///
 /// Frame semantics (ECMA-376): &lt;a:xfrm&gt; is ATOMIC. A placeholder either
 /// carries a complete xfrm (owns its frame) or none (inherits the whole frame
@@ -36,6 +42,30 @@ namespace OfficeCli.Handlers;
 /// </summary>
 internal static class SlideComposition
 {
+    // ==================== Visibility Gates ====================
+
+    /// <summary>
+    /// Whether a shape is marked hidden in its own <c>&lt;p:cNvPr hidden="1"&gt;</c>.
+    /// The gate travels with the shape through the whole composition: a hidden
+    /// master or layout decoration must not reach a slide, and a hidden shape on
+    /// the slide itself is just as absent from PowerPoint's output. Consumers
+    /// that paint shapes skip these; consumers that read the model (get/query)
+    /// still see them, because the shape is in the file either way.
+    /// </summary>
+    public static bool IsHidden(OpenXmlElement? element)
+    {
+        var cNvPr = element switch
+        {
+            Shape shape => shape.NonVisualShapeProperties?.NonVisualDrawingProperties,
+            Picture picture => picture.NonVisualPictureProperties?.NonVisualDrawingProperties,
+            ConnectionShape connector => connector.NonVisualConnectionShapeProperties?.NonVisualDrawingProperties,
+            GraphicFrame frame => frame.NonVisualGraphicFrameProperties?.NonVisualDrawingProperties,
+            GroupShape group => group.NonVisualGroupShapeProperties?.NonVisualDrawingProperties,
+            _ => null,
+        };
+        return cNvPr?.Hidden?.Value == true;
+    }
+
     // ==================== Placeholder Slot Matching ====================
 
     /// <summary>
