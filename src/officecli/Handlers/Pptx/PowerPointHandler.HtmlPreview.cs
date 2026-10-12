@@ -764,6 +764,12 @@ public partial class PowerPointHandler
             }
         }
 
+        // <p:hf> gates (issue #466, symptom 2): a metadata slot the layout/master
+        // turns off is skipped by both inherited passes, same mechanism as a
+        // slot the slide supplies itself.
+        foreach (var key in SlideComposition.HiddenMetadataSlotKeys(slidePart))
+            slidePlaceholders.Add(key);
+
         // CONSISTENCY(layer-paint-order): the two inherited passes are emitted
         // master first, layout second, because that emission order IS the
         // stacking order — the slide markup carries no z-index, so a shape's

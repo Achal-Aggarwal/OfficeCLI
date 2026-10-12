@@ -25,7 +25,7 @@ namespace OfficeCli.Handlers;
 /// This module is the one place that resolves the model; consumers read from
 /// it instead of improvising. Scope of this first extraction: placeholder
 /// slot matching, inherited-frame resolution and its provenance. Later steps
-/// per issue #466: layer paint order, hf/showMasterSp gates, effective
+/// per issue #466: showMasterSp handling inside the module, effective
 /// fill inheritance.
 ///
 /// Visibility gates: a shape marked &lt;p:cNvPr hidden="1"&gt; is not drawn. The
@@ -64,6 +64,29 @@ internal static class SlideComposition
             _ => null,
         };
         return cNvPr?.Hidden?.Value == true;
+    }
+
+    // ==================== Header/Footer Gates ====================
+
+    /// <summary>
+    /// The metadata slots (<c>dt</c>, <c>ftr</c>, <c>hdr</c>, <c>sldNum</c>) a slide
+    /// does NOT display, as <c>type:&lt;ph type&gt;</c> skip keys for the inherited
+    /// passes. &lt;p:hf&gt; on the layout overrides the master's; an absent flag
+    /// means shown. The master's footer placeholder holds the footer TEXT, but
+    /// &lt;p:hf ftr="0"/&gt; means "do not display it" — without this gate every
+    /// slide inherited the text. A slide's own metadata shape is not gated: it
+    /// was placed on that slide deliberately.
+    /// </summary>
+    public static IEnumerable<string> HiddenMetadataSlotKeys(SlidePart slidePart)
+    {
+        var layoutHf = slidePart.SlideLayoutPart?.SlideLayout?.GetFirstChild<HeaderFooter>();
+        var masterHf = slidePart.SlideLayoutPart?.SlideMasterPart?.SlideMaster?.GetFirstChild<HeaderFooter>();
+        static bool Shown(BooleanValue? layout, BooleanValue? master)
+            => layout?.HasValue == true ? layout.Value : master?.HasValue != true || master.Value;
+        if (!Shown(layoutHf?.DateTime, masterHf?.DateTime)) yield return "type:dt";
+        if (!Shown(layoutHf?.Footer, masterHf?.Footer)) yield return "type:ftr";
+        if (!Shown(layoutHf?.Header, masterHf?.Header)) yield return "type:hdr";
+        if (!Shown(layoutHf?.SlideNumber, masterHf?.SlideNumber)) yield return "type:sldNum";
     }
 
     // ==================== Placeholder Slot Matching ====================
@@ -136,8 +159,10 @@ internal static class SlideComposition
         static bool IsTitleFamily(PlaceholderValues v)
             => v == PlaceholderValues.Title || v == PlaceholderValues.CenteredTitle;
 
+        // Same partition as the cascade's bodyStyle (Body / SubTitle / Object)
+        // and the idx-only branch above, so one family rule covers all three.
         static bool IsBodyFamily(PlaceholderValues v)
-            => v == PlaceholderValues.Body || v == PlaceholderValues.SubTitle;
+            => v == PlaceholderValues.Body || v == PlaceholderValues.SubTitle || v == PlaceholderValues.Object;
 
         return (IsTitleFamily(a) && IsTitleFamily(b)) || (IsBodyFamily(a) && IsBodyFamily(b));
     }

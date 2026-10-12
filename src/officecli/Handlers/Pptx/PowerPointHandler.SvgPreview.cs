@@ -201,6 +201,9 @@ public partial class PowerPointHandler
             }
         }
 
+        foreach (var key in SlideComposition.HiddenMetadataSlotKeys(slidePart))
+            slidePlaceholders.Add(key);
+
         // CONSISTENCY(layer-paint-order): master first, layout second — SVG paints
         // in document order, so this is what puts master decoration at the bottom
         // of the stack, the way PowerPoint composes the slide (issue #466,
