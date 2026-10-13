@@ -211,7 +211,7 @@ public partial class PowerPointHandler
         var layoutPart = slidePart.SlideLayoutPart;
         var masterPart = layoutPart?.SlideMasterPart;
 
-        if (masterPart != null)
+        if (masterPart != null && SlideComposition.ShowMasterShapes(slidePart))
             RenderInheritedShapesSvg(sb, defs, ref defId, masterPart.SlideMaster?.CommonSlideData?.ShapeTree,
                 masterPart, slidePlaceholders, themeColors);
 

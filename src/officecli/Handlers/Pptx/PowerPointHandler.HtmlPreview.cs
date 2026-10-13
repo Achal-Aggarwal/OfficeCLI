@@ -785,7 +785,7 @@ public partial class PowerPointHandler
         // R12-2: <p:sld showMasterSp="0"> suppresses master-level decoration.
         // The flag only governs the master's own shapes — layout placeholders
         // still render.
-        var showMasterSp = GetSlide(slidePart).ShowMasterShapes?.Value ?? true;
+        var showMasterSp = SlideComposition.ShowMasterShapes(slidePart);
         if (masterPart != null && showMasterSp)
             RenderInheritedShapes(sb, masterPart.SlideMaster?.CommonSlideData?.ShapeTree, masterPart, slidePlaceholders, themeColors, slideNum);
 
