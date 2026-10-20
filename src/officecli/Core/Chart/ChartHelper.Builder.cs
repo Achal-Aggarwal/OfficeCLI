@@ -1466,8 +1466,23 @@ internal static partial class ChartHelper
 
     internal static void ApplySeriesColor(OpenXmlCompositeElement series, string color)
     {
+        // #500: a markers-only scatter series (its line seeded as noFill by
+        // BuildScatterChart, or the group's scatterStyle=marker) must stay
+        // line-less. Writing the colour as a 2pt line stroke here made
+        // PowerPoint and other renderers — which draw by the series line and
+        // ignore scatterStyle — connect the points. Colour the markers instead.
+        bool markerOnly = IsMarkerOnlyScatterSeries(series);
         series.RemoveAllChildren<C.ChartShapeProperties>();
         var spPr = new C.ChartShapeProperties();
+        if (markerOnly && !color.Equals("none", StringComparison.OrdinalIgnoreCase))
+        {
+            spPr.AppendChild(new Drawing.Outline(new Drawing.NoFill()));
+            var serTextM = series.GetFirstChild<C.SeriesText>();
+            if (serTextM != null) serTextM.InsertAfterSelf(spPr);
+            else series.PrependChild(spPr);
+            ColorScatterMarker(series, color);
+            return;
+        }
         if (color.Equals("none", StringComparison.OrdinalIgnoreCase))
         {
             spPr.AppendChild(new Drawing.NoFill());
@@ -1508,6 +1523,41 @@ internal static partial class ChartHelper
             serText.InsertAfterSelf(spPr);
         else
             series.PrependChild(spPr);
+    }
+
+    /// <summary>
+    /// A scatter series that draws markers only: its line is explicitly noFill,
+    /// or its scatterChart's scatterStyle is marker.
+    /// </summary>
+    internal static bool IsMarkerOnlyScatterSeries(OpenXmlCompositeElement series)
+    {
+        bool isScatter = series is C.ScatterChartSeries || series.Parent?.LocalName == "scatterChart";
+        if (!isScatter) return false;
+        var ln = series.GetFirstChild<C.ChartShapeProperties>()?.GetFirstChild<Drawing.Outline>();
+        if (ln?.GetFirstChild<Drawing.NoFill>() != null) return true;
+        var style = (series.Parent as C.ScatterChart)?.GetFirstChild<C.ScatterStyle>()?.Val;
+        return style?.HasValue == true && style.Value == C.ScatterStyleValues.Marker;
+    }
+
+    /// <summary>
+    /// Put <paramref name="color"/> on a scatter series' markers — fill AND
+    /// outline (an outline left unset falls back to the theme accent in
+    /// PowerPoint, tinting a blue marker purple). Keeps the marker's symbol and
+    /// size; a series without a marker gets a circle.
+    /// </summary>
+    internal static void ColorScatterMarker(OpenXmlCompositeElement series, string color)
+    {
+        var marker = series.GetFirstChild<C.Marker>();
+        if (marker == null)
+        {
+            marker = new C.Marker(new C.Symbol { Val = C.MarkerStyleValues.Circle });
+            InsertSeriesChildInOrder(series, marker);
+        }
+        marker.RemoveAllChildren<C.ChartShapeProperties>();
+        var fill = new Drawing.SolidFill(); fill.AppendChild(BuildChartColorElement(color));
+        var lnFill = new Drawing.SolidFill(); lnFill.AppendChild(BuildChartColorElement(color));
+        // CT_Marker: symbol?, size?, spPr? — spPr is last.
+        marker.AppendChild(new C.ChartShapeProperties(fill, new Drawing.Outline(lnFill)));
     }
 
     /// <summary>

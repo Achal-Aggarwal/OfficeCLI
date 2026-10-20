@@ -2204,6 +2204,24 @@ internal static partial class ChartHelper
                             $"Invalid scatterStyle '{value}'. Valid values: line, lineMarker, marker, smooth, smoothMarker.")
                     };
                     sc.PrependChild(new C.ScatterStyle { Val = ssVal });
+                    // #500: PowerPoint and other renderers draw by the series line and
+                    // ignore scatterStyle, so switching to markers-only must
+                    // also turn each series line off — moving its colour onto
+                    // the markers — or the points stay connected.
+                    if (ssVal == C.ScatterStyleValues.Marker)
+                    {
+                        foreach (var ser in sc.Elements<C.ScatterChartSeries>())
+                        {
+                            var spPrS = ser.GetFirstChild<C.ChartShapeProperties>();
+                            var lnS = spPrS?.GetFirstChild<Drawing.Outline>();
+                            if (lnS?.GetFirstChild<Drawing.NoFill>() != null) continue;
+                            var rgb = lnS?.GetFirstChild<Drawing.SolidFill>()?.GetFirstChild<Drawing.RgbColorModelHex>()?.Val?.Value;
+                            var spPrNew = new C.ChartShapeProperties(new Drawing.Outline(new Drawing.NoFill()));
+                            if (spPrS != null) { spPrS.InsertAfterSelf(spPrNew); spPrS.Remove(); }
+                            else InsertSeriesChildInOrder(ser, spPrNew);
+                            if (rgb != null) ColorScatterMarker(ser, rgb);
+                        }
+                    }
                     break;
                 }
 
