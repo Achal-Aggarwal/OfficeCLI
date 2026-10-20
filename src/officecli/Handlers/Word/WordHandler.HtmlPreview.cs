@@ -3050,6 +3050,9 @@ public partial class WordHandler
                     currentListLevel = ilvl;
                     prevOoxmlIlvl = ilvlOoxml;
                     currentNumId = numId;
+                    // Keep the shared state's active num in step so a table-cell
+                    // list after this body list sees the switch (EnterOrderedNum).
+                    olState.CurrentNumId = numId;
                     sb.Append("<li");
                     sb.Append($" data-path=\"/body/p[{wParaCount}]\"");
                     // Marker class wires up the ::marker rule emitted by

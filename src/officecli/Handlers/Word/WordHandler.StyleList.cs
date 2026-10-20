@@ -1026,6 +1026,35 @@ public partial class WordHandler
     }
 
     /// <summary>
+    /// Make <paramref name="numId"/> the active list before advancing an item of
+    /// it. A different numId breaks the active run: clear the in-run counters
+    /// (but NOT AbsNumLevelCounters — that carries continuation across sibling
+    /// nums sharing an abstractNum, and SeedOrderedStart restores it), and
+    /// re-arm the new num's per-instance startOverrides: each overridden level
+    /// fires its override the next time it is DIRECTLY advanced, even if a
+    /// deeper item carried the level over first. EXCEPTION: a level with
+    /// lvlRestart="0" (never restart) that is already running does NOT fire —
+    /// startOverride applies only on a level's initial start or an
+    /// lvlRestart-triggered restart (ECMA-376 §17.9.7). The same numId continues
+    /// across intervening non-list paragraphs, exactly as Word does.
+    /// Shared by the text walker and the HTML table-cell path (#512: a cell's
+    /// list used to inherit the previous list's in-run count, so independent
+    /// lists in table cells numbered 100, 101, … after a body list ending at 99).
+    /// </summary>
+    private void EnterOrderedNum(OrderedListNumberingState st, int numId)
+    {
+        if (st.CurrentNumId == numId) return;
+        st.OlCountPerLevel.Clear();
+        st.MultiLevelCounters.Clear();
+        st.CurrentNumId = numId;
+        st.PendingInstanceOverride.Clear();
+        for (int lv = 0; lv <= 8; lv++)
+            if (GetNumInstanceOverrideStart(numId, lv).HasValue
+                && GetEffectiveLvlRestart(numId, lv) != 0)
+                st.PendingInstanceOverride.Add(lv);
+    }
+
+    /// <summary>
     /// Advance the counter for an ordered item at (numId, ilvl): increment this
     /// level, then reset deeper levels per each deeper level's
     /// <c>&lt;w:lvlRestart&gt;</c> (ECMA-376 §17.9.6), and mirror the running
@@ -1289,26 +1318,7 @@ public partial class WordHandler
         // sibling nums sharing an abstractNum). Mirrors the HTML reset at
         // WordHandler.HtmlPreview.cs. Same numId continues across intervening
         // non-list paragraphs, exactly as Word does.
-        if (st.CurrentNumId != numId.Value)
-        {
-            st.OlCountPerLevel.Clear();
-            st.MultiLevelCounters.Clear();
-            st.CurrentNumId = numId.Value;
-            // Re-arm per-instance startOverrides for the new num: each overridden
-            // level fires its override the next time it is DIRECTLY advanced,
-            // even if a deeper item carried the level over first. EXCEPTION: a
-            // level with lvlRestart="0" (never restart) that is already running
-            // does NOT fire — startOverride applies only on a level's initial
-            // start or an lvlRestart-triggered restart (ECMA-376 §17.9.7), and a
-            // never-restart continued level meets neither, so it keeps counting
-            // (Word continues such a level across the numId switch instead of
-            // jumping to the override value).
-            st.PendingInstanceOverride.Clear();
-            for (int lv = 0; lv <= 8; lv++)
-                if (GetNumInstanceOverrideStart(numId.Value, lv).HasValue
-                    && GetEffectiveLvlRestart(numId.Value, lv) != 0)
-                    st.PendingInstanceOverride.Add(lv);
-        }
+        EnterOrderedNum(st, numId.Value);
 
         var absId = GetAbstractNumId(numId.Value);
         AdvanceOrderedCounter(st, numId.Value, absId, ilvl);
