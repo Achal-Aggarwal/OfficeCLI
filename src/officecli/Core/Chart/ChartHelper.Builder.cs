@@ -433,6 +433,7 @@ internal static partial class ChartHelper
         }
 
         // Apply cell references for dotted syntax (series1.values=Sheet1!B2:B13)
+        ApplySeriesLiteralXValues(plotArea, properties);
         ApplySeriesReferences(plotArea, properties);
 
         // Restore source c:idx / c:order (series{N}.seriesIdx / .seriesOrder).
@@ -472,6 +473,46 @@ internal static partial class ChartHelper
     /// Replace literal Values/CategoryAxisData with NumberReference/StringReference
     /// when dotted syntax cell references are used.
     /// </summary>
+    /// <summary>
+    /// Scatter / bubble: a series' own literal <c>series{N}.categories=2.7,5.9</c>
+    /// becomes that series' X values (<c>c:xVal</c>). It used to be read and
+    /// dropped (only the cell-range form was honoured), so every series took the
+    /// chart-level categories — or 1, 2, … — as X and a scatter with one series
+    /// per group of points could not be built through props (#501). The range
+    /// form is still handled by <see cref="ApplySeriesReferences"/>.
+    /// </summary>
+    private static void ApplySeriesLiteralXValues(C.PlotArea plotArea, Dictionary<string, string> properties)
+    {
+        var allSer = plotArea.Descendants<OpenXmlCompositeElement>()
+            .Where(e => e.LocalName == "ser").ToList();
+        for (int i = 1; i <= allSer.Count; i++)
+        {
+            if (!properties.TryGetValue($"series{i}.categories", out var cats)
+                || string.IsNullOrWhiteSpace(cats) || IsRangeReference(cats)) continue;
+            if (allSer[i - 1] is not (C.ScatterChartSeries or C.BubbleChartSeries)) continue;
+            var xs = ParseSeriesValues(cats, $"series{i}.categories");
+            var lit = new C.NumberLiteral(new C.FormatCode("General"),
+                new C.PointCount { Val = (uint)xs.Length });
+            for (int k = 0; k < xs.Length; k++)
+                lit.AppendChild(new C.NumericPoint(new C.NumericValue(
+                    xs[k].ToString("R", System.Globalization.CultureInfo.InvariantCulture))) { Index = (uint)k });
+            var xVal = allSer[i - 1].GetFirstChild<C.XValues>();
+            if (xVal != null)
+            {
+                xVal.RemoveAllChildren();
+                xVal.AppendChild(lit);
+            }
+            else
+            {
+                // CT_ScatterSer / CT_BubbleSer: xVal precedes yVal.
+                var yVal = allSer[i - 1].GetFirstChild<C.YValues>();
+                var newX = new C.XValues(lit);
+                if (yVal != null) yVal.InsertBeforeSelf(newX);
+                else allSer[i - 1].AppendChild(newX);
+            }
+        }
+    }
+
     private static void ApplySeriesReferences(C.PlotArea plotArea, Dictionary<string, string> properties)
     {
         var extSeries = ParseSeriesDataExtended(properties);
