@@ -1244,9 +1244,9 @@ public partial class PowerPointHandler
         var (srcSlidePart, srcElement) = ResolveSlideElement(sourcePath, slideParts);
         var clone = srcElement.CloneNode(true);
 
-        // Assign new unique cNvPr.Id to the clone to avoid duplicate IDs on the target slide
-        var cloneNvPr = clone.Descendants<NonVisualDrawingProperties>().FirstOrDefault();
-        if (cloneNvPr != null)
+        // Assign a new unique cNvPr.Id to the clone AND to every shape nested in
+        // it: a cloned group used to keep its children's ids, so each child id
+        // appeared twice on the slide.
         {
             var tgtSlideMatchPre = Regex.Match(targetParentPath, @"^/slide\[(\d+)\]$");
             if (tgtSlideMatchPre.Success)
@@ -1256,7 +1256,8 @@ public partial class PowerPointHandler
                 {
                     var tgtTree = GetSlide(slideParts[tgtIdx - 1]).CommonSlideData?.ShapeTree;
                     if (tgtTree != null)
-                        cloneNvPr.Id = GenerateUniqueShapeId(tgtTree);
+                        foreach (var nv in clone.Descendants<NonVisualDrawingProperties>().ToList())
+                            nv.Id = GenerateUniqueShapeId(tgtTree);
                 }
             }
         }
@@ -1922,6 +1923,8 @@ public partial class PowerPointHandler
                 => cdp.AddNewPart<DocumentFormat.OpenXml.Packaging.ChartPart>(),
             DocumentFormat.OpenXml.Packaging.ExtendedChartPart
                 when parent is SlidePart sp2 => sp2.AddNewPart<DocumentFormat.OpenXml.Packaging.ExtendedChartPart>(),
+            DocumentFormat.OpenXml.Packaging.UserDefinedTagsPart
+                when parent is SlidePart spT => spT.AddNewPart<DocumentFormat.OpenXml.Packaging.UserDefinedTagsPart>(),
             DocumentFormat.OpenXml.Packaging.ChartStylePart
                 => parent.AddNewPart<DocumentFormat.OpenXml.Packaging.ChartStylePart>(),
             DocumentFormat.OpenXml.Packaging.ChartColorStylePart
@@ -1964,6 +1967,10 @@ public partial class PowerPointHandler
         // without its own copies cannot be opened at all.
         or DocumentFormat.OpenXml.Packaging.ChartStylePart
         or DocumentFormat.OpenXml.Packaging.ChartColorStylePart
+        // A shape's tags part (p:custDataLst/p:tags, written by add-ins) is
+        // per-shape: PowerPoint refuses a deck where two shapes reference one
+        // tags part (verified), so a clone gets its own copy.
+        or DocumentFormat.OpenXml.Packaging.UserDefinedTagsPart
         or DocumentFormat.OpenXml.Packaging.EmbeddedPackagePart
         or DocumentFormat.OpenXml.Packaging.EmbeddedObjectPart
         or DocumentFormat.OpenXml.Packaging.DiagramDataPart
