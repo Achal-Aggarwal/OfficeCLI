@@ -1717,6 +1717,27 @@ public partial class PowerPointHandler
                     && shapeIdRemap.TryGetValue(endCxn.Id.Value, out var mappedEnd))
                     endCxn.Id = mappedEnd;
             }
+
+            // Animations name their shapes by id too: p:spTgt/@spid inside
+            // the timing tree and p:bldP / p:bldOleChart / p:bldDgm /
+            // p:bldGraphic @spid in p:bldLst. Left untouched, the clone's
+            // timing still pointed at the source slide's shape ids, which do
+            // not exist on the copy; real PowerPoint refuses to open such a
+            // deck. Every spid attribute under p:timing is remapped.
+            var timing = newSlidePart.Slide.Timing;
+            if (timing != null && shapeIdRemap.Count > 0)
+            {
+                foreach (var el in timing.Descendants().ToList())
+                {
+                    foreach (var attr in el.GetAttributes().ToList())
+                    {
+                        if (attr.LocalName != "spid" || !string.IsNullOrEmpty(attr.NamespaceUri)) continue;
+                        if (uint.TryParse(attr.Value, out var spid)
+                            && shapeIdRemap.TryGetValue(spid, out var mappedSpid))
+                            el.SetAttribute(new OpenXmlAttribute(attr.Prefix, attr.LocalName, attr.NamespaceUri, mappedSpid.ToString()));
+                    }
+                }
+            }
         }
 
         // 4. Copy all referenced parts (images, charts, embedded objects, media)
