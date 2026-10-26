@@ -1901,7 +1901,58 @@ public partial class PowerPointHandler
             catch { }
         }
 
+        // Video, audio and p14:media reach their MediaDataPart through
+        // DataPartReferenceRelationships — a collection separate from Parts,
+        // so the loop above never sees them and the clone kept r:link /
+        // r:embed ids that only the source slide owns.
+        foreach (var dataRef in source.DataPartReferenceRelationships)
+        {
+            try
+            {
+                var newId = CopyDataPartReference(target, dataRef);
+                if (newId != null && newId != dataRef.Id)
+                    rIdMap[dataRef.Id] = newId;
+            }
+            catch { }
+        }
+
         return rIdMap;
+    }
+
+    /// <summary>
+    /// Re-create one media reference (video / audio / p14:media) on
+    /// <paramref name="target"/>, pointing at the same shared MediaDataPart.
+    /// Media data is read-only after creation, so sharing is as safe as it is
+    /// for images. An existing reference of the same kind to the same data
+    /// part is reused; otherwise the source id is kept when it is free so the
+    /// copied XML stays valid without a rewrite. Returns the id to use, or
+    /// null for a reference kind this copier does not know.
+    /// </summary>
+    private static string? CopyDataPartReference(OpenXmlPartContainer target, DataPartReferenceRelationship dataRef)
+    {
+        if (dataRef.DataPart is not MediaDataPart media) return null;
+
+        var existing = target.DataPartReferenceRelationships
+            .FirstOrDefault(r => r.GetType() == dataRef.GetType() && ReferenceEquals(r.DataPart, media));
+        if (existing != null) return existing.Id;
+
+        var idFree = !target.Parts.Any(p => p.RelationshipId == dataRef.Id)
+            && !target.ExternalRelationships.Any(r => r.Id == dataRef.Id)
+            && !target.HyperlinkRelationships.Any(r => r.Id == dataRef.Id)
+            && !target.DataPartReferenceRelationships.Any(r => r.Id == dataRef.Id);
+        var id = idFree ? dataRef.Id : null;
+
+        // The SDK declares these per concrete part type (no container-level
+        // overload); NotesSlidePart has no p14:media reference.
+        return (target, dataRef) switch
+        {
+            (SlidePart sp, VideoReferenceRelationship) => id != null ? sp.AddVideoReferenceRelationship(media, id).Id : sp.AddVideoReferenceRelationship(media).Id,
+            (SlidePart sp, AudioReferenceRelationship) => id != null ? sp.AddAudioReferenceRelationship(media, id).Id : sp.AddAudioReferenceRelationship(media).Id,
+            (SlidePart sp, MediaReferenceRelationship) => id != null ? sp.AddMediaReferenceRelationship(media, id).Id : sp.AddMediaReferenceRelationship(media).Id,
+            (NotesSlidePart np, VideoReferenceRelationship) => id != null ? np.AddVideoReferenceRelationship(media, id).Id : np.AddVideoReferenceRelationship(media).Id,
+            (NotesSlidePart np, AudioReferenceRelationship) => id != null ? np.AddAudioReferenceRelationship(media, id).Id : np.AddAudioReferenceRelationship(media).Id,
+            _ => null,
+        };
     }
 
     /// <summary>
@@ -2188,6 +2239,23 @@ public partial class PowerPointHandler
                     handled = true;
                 }
                 catch (ArgumentOutOfRangeException) { /* Not a part-based relationship */ }
+
+                if (!handled)
+                {
+                    // Video / audio / p14:media: GetPartById throws for these
+                    // because they live in DataPartReferenceRelationships.
+                    var dataRef = sourcePart.DataPartReferenceRelationships.FirstOrDefault(r => r.Id == oldRelId);
+                    if (dataRef != null)
+                    {
+                        var newDRelId = CopyDataPartReference(targetPart, dataRef);
+                        if (newDRelId != null)
+                        {
+                            if (newDRelId != oldRelId)
+                                el.SetAttribute(new OpenXmlAttribute(attr.Prefix, attr.LocalName, attr.NamespaceUri, newDRelId));
+                            handled = true;
+                        }
+                    }
+                }
 
                 if (!handled)
                 {
