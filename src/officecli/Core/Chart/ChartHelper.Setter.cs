@@ -1258,7 +1258,7 @@ internal static partial class ChartHelper
                 {
                     var plotArea2 = chart.GetFirstChild<C.PlotArea>();
                     if (plotArea2 == null) { unsupported.Add(key); break; }
-                    var mSize = ParseHelpers.SafeParseByte(value, "markersize");
+                    var mSize = ParseHelpers.ParseMarkerSize(value, "markersize");
                     foreach (var ser in plotArea2.Descendants<OpenXmlCompositeElement>().Where(e => e.LocalName == "ser"))
                     {
                         if (ser is not (C.LineChartSeries or C.ScatterChartSeries or C.RadarChartSeries))
@@ -3996,8 +3996,8 @@ internal static partial class ChartHelper
         series.RemoveAllChildren<C.Marker>();
         var marker = new C.Marker();
         marker.AppendChild(new C.Symbol { Val = style });
-        if (parts.Length > 1 && byte.TryParse(parts[1], out var size))
-            marker.AppendChild(new C.Size { Val = size });
+        if (parts.Length > 1 && !string.IsNullOrWhiteSpace(parts[1]))
+            marker.AppendChild(new C.Size { Val = ParseHelpers.ParseMarkerSize(parts[1], "marker size") });
         else if (existingSize != null)
             marker.AppendChild(existingSize);
         if (parts.Length > 2)

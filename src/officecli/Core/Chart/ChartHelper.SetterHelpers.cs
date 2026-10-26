@@ -582,7 +582,7 @@ internal static partial class ChartHelper
 
     internal static bool ApplyDataPointMarkerSize(OpenXmlCompositeElement series, int pointIndex, string value)
     {
-        if (!byte.TryParse(value, out var size)) return false;
+        var size = ParseHelpers.ParseMarkerSize(value, "point.markerSize");
         var dPt = EnsureDataPoint(series, pointIndex);
         var marker = dPt.GetFirstChild<C.Marker>();
         if (marker == null)
@@ -760,7 +760,7 @@ internal static partial class ChartHelper
                 // markerColor ran first (the dump emits marker→markerColor→
                 // markerSize), producing 'unexpected child element size'. Mirrors
                 // ApplyDataPointMarkerSize.
-                var szEl = new C.Size { Val = ParseHelpers.SafeParseByte(value, "series.markerSize") };
+                var szEl = new C.Size { Val = ParseHelpers.ParseMarkerSize(value, "series.markerSize") };
                 var sym = marker.GetFirstChild<C.Symbol>();
                 if (sym != null) sym.InsertAfterSelf(szEl);
                 else marker.PrependChild(szEl);
