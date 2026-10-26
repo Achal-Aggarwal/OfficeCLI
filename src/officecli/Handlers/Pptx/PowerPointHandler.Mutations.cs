@@ -1272,9 +1272,12 @@ public partial class PowerPointHandler
         var tgtShapeTree = GetSlide(tgtSlidePart).CommonSlideData?.ShapeTree
             ?? throw new InvalidOperationException("Slide has no shape tree");
 
-        // Copy relationships if across slides
-        if (srcSlidePart != tgtSlidePart)
-            CopyRelationships(clone, srcSlidePart, tgtSlidePart);
+        // Copy relationships on every clone, same slide included: a part the
+        // clone must own (chart, embedded workbook, diagram) is deep-copied
+        // there, while shareable parts (images, media) keep their rId. Skipping
+        // this for a same-slide clone left two chart frames pointing at one
+        // chart part, which PowerPoint refuses to open.
+        CopyRelationships(clone, srcSlidePart, tgtSlidePart);
 
         InsertAtPosition(tgtShapeTree, clone, index);
         GetSlide(tgtSlidePart).Save();
@@ -1919,6 +1922,10 @@ public partial class PowerPointHandler
                 => cdp.AddNewPart<DocumentFormat.OpenXml.Packaging.ChartPart>(),
             DocumentFormat.OpenXml.Packaging.ExtendedChartPart
                 when parent is SlidePart sp2 => sp2.AddNewPart<DocumentFormat.OpenXml.Packaging.ExtendedChartPart>(),
+            DocumentFormat.OpenXml.Packaging.ChartStylePart
+                => parent.AddNewPart<DocumentFormat.OpenXml.Packaging.ChartStylePart>(),
+            DocumentFormat.OpenXml.Packaging.ChartColorStylePart
+                => parent.AddNewPart<DocumentFormat.OpenXml.Packaging.ChartColorStylePart>(),
             DocumentFormat.OpenXml.Packaging.EmbeddedPackagePart
                 => parent.AddNewPart<DocumentFormat.OpenXml.Packaging.EmbeddedPackagePart>(source.ContentType),
             DocumentFormat.OpenXml.Packaging.EmbeddedObjectPart
@@ -1951,6 +1958,12 @@ public partial class PowerPointHandler
     private static bool NeedsDeepCopy(OpenXmlPart part) => part is
         DocumentFormat.OpenXml.Packaging.ChartPart
         or DocumentFormat.OpenXml.Packaging.ExtendedChartPart
+        // A chart's style / colour parts belong to that chart: PowerPoint
+        // refuses to open a deck in which two chart parts point at the same
+        // style1.xml / colors1.xml (0x80070570, verified), and a chartEx
+        // without its own copies cannot be opened at all.
+        or DocumentFormat.OpenXml.Packaging.ChartStylePart
+        or DocumentFormat.OpenXml.Packaging.ChartColorStylePart
         or DocumentFormat.OpenXml.Packaging.EmbeddedPackagePart
         or DocumentFormat.OpenXml.Packaging.EmbeddedObjectPart
         or DocumentFormat.OpenXml.Packaging.DiagramDataPart
@@ -1990,6 +2003,46 @@ public partial class PowerPointHandler
                 }
             }
             catch { /* best-effort copy */ }
+        }
+        // External relationships travel with the part too: a chart whose data
+        // lives in a linked workbook carries an oleObject relationship with
+        // TargetMode="External" that <c:externalData r:id> points at. Dropping
+        // it left the clone with a dangling r:id (validator error, "Edit Data"
+        // lost in PowerPoint). Keep the source id where it is free so the XML
+        // reference stays valid without a rewrite.
+        foreach (var extRel in source.ExternalRelationships)
+        {
+            try
+            {
+                var newId = target.AddExternalRelationship(extRel.RelationshipType, extRel.Uri, extRel.Id).Id;
+                if (newId != extRel.Id) subRIdMap[extRel.Id] = newId;
+            }
+            catch
+            {
+                try
+                {
+                    var newId = target.AddExternalRelationship(extRel.RelationshipType, extRel.Uri).Id;
+                    subRIdMap[extRel.Id] = newId;
+                }
+                catch { /* best-effort copy */ }
+            }
+        }
+        foreach (var hyperRel in source.HyperlinkRelationships)
+        {
+            try
+            {
+                var newId = target.AddHyperlinkRelationship(hyperRel.Uri, hyperRel.IsExternal, hyperRel.Id).Id;
+                if (newId != hyperRel.Id) subRIdMap[hyperRel.Id] = newId;
+            }
+            catch
+            {
+                try
+                {
+                    var newId = target.AddHyperlinkRelationship(hyperRel.Uri, hyperRel.IsExternal).Id;
+                    subRIdMap[hyperRel.Id] = newId;
+                }
+                catch { /* best-effort copy */ }
+            }
         }
         if (subRIdMap.Count > 0)
         {
