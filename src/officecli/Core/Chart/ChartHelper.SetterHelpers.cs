@@ -555,6 +555,12 @@ internal static partial class ChartHelper
             case "auto":     style = C.MarkerStyleValues.Auto; break;
             default:         return false;
         }
+        // Validate the size before touching the part so a rejected value
+        // leaves the package untouched (ST_MarkerSize 2..72, same parser as
+        // every other marker-size writer).
+        byte? size = parts.Length > 1 && !string.IsNullOrWhiteSpace(parts[1])
+            ? ParseHelpers.ParseMarkerSize(parts[1], "point.marker size")
+            : null;
         var dPt = EnsureDataPoint(series, pointIndex);
         var existing = dPt.GetFirstChild<C.Marker>();
         var existingSize = existing?.GetFirstChild<C.Size>()?.CloneNode(true) as C.Size;
@@ -562,8 +568,8 @@ internal static partial class ChartHelper
         dPt.RemoveAllChildren<C.Marker>();
         var marker = new C.Marker();
         marker.AppendChild(new C.Symbol { Val = style });
-        if (parts.Length > 1 && byte.TryParse(parts[1], out var size))
-            marker.AppendChild(new C.Size { Val = size });
+        if (size != null)
+            marker.AppendChild(new C.Size { Val = size.Value });
         else if (existingSize != null)
             marker.AppendChild(existingSize);
         if (parts.Length > 2)
