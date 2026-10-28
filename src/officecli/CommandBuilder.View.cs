@@ -284,118 +284,28 @@ static partial class CommandBuilder
 
                     if (directPng == null)
                     {
-                        // A multi-slide range without --grid is a one-column contact
-                        // sheet: the same CSS tiles it and the viewport below follows
-                        // the rows, so --page 1-N is no longer cropped to the first
-                        // slide (issue #485). Native export above keeps its own stack.
-                        int htmlGridCols = gridColsResolved > 0 ? gridColsResolved
-                            : (pStart.HasValue && pEnd.HasValue && pStart.Value != pEnd.Value ? 1 : 0);
-                        if (htmlGridCols > 0)
-                        {
-                            // Mirror the grid CSS in PowerPointHandler.HtmlPreview.cs
-                            // (24px total padding, 12px gap) and HtmlScreenshot.CapDim's
-                            // 1920px ceiling, so the capture is exactly the sheet.
-                            const int pad = 24, gap = 12, maxDim = 1920;
-                            int count = (pEnd ?? pptHandler.GetSlideCount()) - (pStart ?? 1) + 1;
-                            int rows = Math.Max(1, (count + htmlGridCols - 1) / htmlGridCols);
-                            double vpW = screenshotWidth == 1600 && screenshotHeight == 1200 && htmlGridCols == 1
-                                ? nativeW + pad : screenshotWidth;
-                            double cellW = Math.Max(1.0, (vpW - pad - (htmlGridCols - 1) * gap) / htmlGridCols);
-                            double cellH = cellW * nativeH / nativeW;
-                            double vpH = pad + rows * cellH + (rows - 1) * gap;
-                            double over = Math.Max(vpW, vpH) / maxDim;
-                            if (over > 1.0) { vpW /= over; vpH /= over; }
-                            screenshotWidth = Math.Max(1, (int)Math.Round(vpW));
-                            screenshotHeight = Math.Max(1, (int)Math.Ceiling(vpH));
-                        }
+                        // Sheet (range / grid) and single-slide viewport sizing are
+                        // shared with the resident path — see PptHtmlScreenshotViewport.
+                        int htmlGridCols = PptHtmlScreenshotViewport(gridCols, gridColsResolved, pStart, pEnd,
+                            pptHandler.GetSlideCount(), nativeW, nativeH, ref screenshotWidth, ref screenshotHeight);
                         html = RenderViaRegistry(pptHandler, "pptx", new OfficeCli.Core.Rendering.RenderOptions
                         { StartPage = pStart, EndPage = pEnd, GridColumns = htmlGridCols, ViewportPx = screenshotWidth })!;
-
-                        // The generic 4:3 viewport (1600×1200) letterboxes a single slide with
-                        // canvas padding. When capturing one slide (not a multi-slide range or
-                        // grid), size the viewport to the slide so the PNG is the slide,
-                        // padding-free (ViewAsHtml scales the slide to fill + zeroes the headless
-                        // page padding). Default dims -> the slide's 96-DPI native pixels;
-                        // a custom --screenshot-width -> that width with an aspect-matched height.
-                        // Multi-slide ranges stack vertically and keep the tall viewport.
-                        if (pStart == pEnd && gridCols == 0)
-                        {
-                            if (screenshotWidth == 1600 && screenshotHeight == 1200)
-                                (screenshotWidth, screenshotHeight) = (nativeW, nativeH);
-                            else if (screenshotHeight == 1200)
-                                screenshotHeight = Math.Max(1, (int)Math.Round(screenshotWidth * (double)nativeH / nativeW));
-                        }
                     }
                 }
                 else if (handler is OfficeCli.Handlers.ExcelHandler excelHandler)
                     html = RenderViaRegistry(excelHandler, "xlsx", new OfficeCli.Core.Rendering.RenderOptions { CellRange = clipArg })!;
-                else if (handler is OfficeCli.Handlers.WordHandler wordHandlerGrid
-                         && (gridCols != 0 || IsMultiPageFilter(pageFilter)))
+                else if (handler is OfficeCli.Handlers.WordHandler wordHandlerGrid && DocxWantsSheet(gridCols, pageFilter))
                 {
-                    // A multi-page --page range without --grid is a one-column
-                    // contact sheet of just those pages, so the viewport follows
-                    // the rows instead of cropping to page 1 (issue #485, docx
-                    // half; mirrors the pptx branch above).
-                    // Contact-sheet grid: tile every page into an N-column (or auto)
-                    // thumbnail grid for a one-shot whole-document overview.
-                    // Native-first, mirroring pptx and single-page docx: on Windows
-                    // with Word, RenderGrid rasterizes each real-Word page and tiles
-                    // it; elsewhere (or on failure) we fall back to the HTML preview
-                    // grid. Column count + cell size are computed once below and used
-                    // by both paths.
-                    const int gap = 12, pad = 12;
-                    const int maxDim = 1920; // mirror HtmlScreenshot.CapDim's LLM-image ceiling
-                    const int scrollbar = 17;
-                    var (npW, npH) = wordHandlerGrid.GetPageNativePixels();
-
-                    // Page count needs a real layout pass; the preview's paginator
-                    // publishes it via <title>PAGES:N> on dump-dom (independent of the
-                    // grid, which only reflows AFTER pagination). Count first so
-                    // `--grid auto` can size the column count to the document.
-                    int pageCount = 1;
-                    var tmpForCount = Path.Combine(Path.GetTempPath(), $"officecli_gridcount_{Path.GetFileNameWithoutExtension(file.Name)}_{Guid.NewGuid():N}.html");
-                    try
-                    {
-                        File.WriteAllText(tmpForCount, RenderViaRegistry(wordHandlerGrid, "docx", new OfficeCli.Core.Rendering.RenderOptions())!);
-                        pageCount = OfficeCli.Core.HtmlScreenshot.GetPageCountFromDom(tmpForCount) ?? 1;
-                    }
-                    catch { /* fall back to 1 row */ }
-                    finally { try { File.Delete(tmpForCount); } catch { /* ignore */ } }
-
-                    // Pages actually tiled: the --page selection clamped to the
-                    // document, or every page when no filter was given.
-                    var selectedPages = ParseDocxPageSelection(pageFilter, pageCount);
-                    int tiled = selectedPages.Count > 0 ? selectedPages.Count : pageCount;
-                    string nativePageSpec = selectedPages.Count > 0 ? string.Join(",", selectedPages) : $"1-{pageCount}";
-
-                    // -1 = auto: pick columns that keep the composed sheet ≈ square;
-                    // 0 (range without --grid) = one column.
-                    int docGridCols = gridCols < 0 ? OfficeCli.Core.HtmlScreenshot.AutoGridColumns(tiled, npW, npH)
-                        : gridCols == 0 ? 1 : gridCols;
-                    int rows = Math.Max(1, (tiled + docGridCols - 1) / docGridCols);
-
-                    // Pre-cap to the 1920 ceiling OURSELVES and recompute cellW from the
-                    // final width, so cellW and the capture viewport stay consistent
-                    // (CapDim shrinking the viewport while cellW stayed fixed is what
-                    // collapsed a 3-col request to 2 cols). After this, CapDim is a no-op.
-                    // Subtract a scrollbar allowance so this matches layoutGrid's
-                    // clientWidth-derived cell size → the row-height estimate (and thus
-                    // the captured viewport) tracks the real grid with little slack.
-                    // One column at the default dims: a page-wide sheet, so each
-                    // page keeps its native width before the 1920 ceiling applies.
-                    double vpW = screenshotWidth == 1600 && screenshotHeight == 1200 && docGridCols == 1
-                        ? npW + scrollbar + 2.0 * pad : screenshotWidth;
-                    double cellW = Math.Max(1.0, (vpW - scrollbar - 2.0 * pad - (docGridCols - 1) * gap) / docGridCols);
-                    double cellH = cellW * npH / npW;
-                    double vpH = pad * 2 + rows * cellH + (rows - 1) * gap;
-                    double over = Math.Max(vpW, vpH) / maxDim;
-                    if (over > 1.0) { vpW /= over; cellW /= over; cellH /= over; vpH /= over; }
-
-                    // Native-first: render each real-Word page and tile (Windows + Word).
+                    // Contact sheet: --grid N/auto over the whole document, or a
+                    // multi-page --page range (one column of just those pages).
+                    // Layout maths are shared with the resident path — see
+                    // DocxSheetLayout. Native-first on Windows with Word; the HTML
+                    // preview grid is the fallback.
+                    var sheet = DocxSheetLayout(wordHandlerGrid, pageFilter, gridCols, screenshotWidth, screenshotHeight);
                     OfficeCli.Core.NativeRenderFailure? nativeFailure = null;
                     if (renderMode != "html" && OperatingSystem.IsWindows())
                     {
-                        try { directPng = OfficeCli.Core.WordPdfBackend.RenderGrid(file.FullName, nativePageSpec, (int)Math.Round(cellW), (int)Math.Round(cellH), docGridCols, gap, pad, out nativeFailure); }
+                        try { directPng = OfficeCli.Core.WordPdfBackend.RenderGrid(file.FullName, sheet.NativePageSpec, sheet.CellWpx, sheet.CellHpx, sheet.Cols, DocxSheetGap, DocxSheetPad, out nativeFailure); }
                         catch (Exception ex) { directPng = null; nativeFailure = OfficeCli.Core.NativeRenderFailure.FromException(ex); }
                     }
                     if (renderMode == "native" && directPng == null)
@@ -404,10 +314,8 @@ static partial class CommandBuilder
                     {
                         // HTML fallback: layoutGrid tiles in-browser; size the viewport
                         // to fit the rows so window-size backends don't crop.
-                        html = RenderViaRegistry(wordHandlerGrid, "docx", new OfficeCli.Core.Rendering.RenderOptions
-                        { PageFilter = selectedPages.Count > 0 ? pageFilter : null, GridColumns = docGridCols, GridCellWidthPx = (int)Math.Round(cellW) })!;
-                        screenshotWidth = Math.Max(1, (int)Math.Round(vpW));
-                        screenshotHeight = Math.Max(1, (int)Math.Ceiling(vpH));
+                        html = RenderViaRegistry(wordHandlerGrid, "docx", sheet.HtmlOptions)!;
+                        (screenshotWidth, screenshotHeight) = (sheet.ViewportW, sheet.ViewportH);
                     }
                 }
                 else if (handler is OfficeCli.Handlers.WordHandler wordHandler)
@@ -438,14 +346,7 @@ static partial class CommandBuilder
                         // headless). Default dims -> native px; a custom --screenshot-width
                         // -> that width with an aspect-matched height. The Windows COM path
                         // (directPng != null) renders real pages and is untouched.
-                        if (int.TryParse(effectiveFilter, out _) && gridCols == 0)
-                        {
-                            var (nativeW, nativeH) = wordHandler.GetPageNativePixels();
-                            if (screenshotWidth == 1600 && screenshotHeight == 1200)
-                                (screenshotWidth, screenshotHeight) = (nativeW, nativeH);
-                            else if (screenshotHeight == 1200)
-                                screenshotHeight = Math.Max(1, (int)Math.Round(screenshotWidth * (double)nativeH / nativeW));
-                        }
+                        DocxSinglePageViewport(wordHandler, effectiveFilter, gridCols, ref screenshotWidth, ref screenshotHeight);
                     }
                 }
 
@@ -789,6 +690,120 @@ static partial class CommandBuilder
         if (renderer == null) return null;
         return renderer.Render(
             new OfficeCli.Handlers.Rendering.HandlerRenderInput(handler, formatId), options).Bytes;
+    }
+
+    // ---- Screenshot viewport sizing shared by the standalone and resident paths ----
+    // ResidentServer.cs mirrors the screenshot branches of this file; the sizing
+    // maths live here once so the two paths cannot drift apart again (issue #485).
+
+    /// <summary>
+    /// Size the HTML-screenshot viewport for a pptx capture and return the grid
+    /// column count the preview should tile with (0 = plain stack).
+    /// A multi-slide range without --grid is a one-column contact sheet; a grid
+    /// mirrors the preview CSS (24px total padding, 12px gap) and the 1920px
+    /// capture ceiling so the PNG is exactly the sheet. A single slide at the
+    /// default dims gets the slide's 96-DPI native pixels, padding-free.
+    /// </summary>
+    internal static int PptHtmlScreenshotViewport(int gridCols, int gridColsResolved, int? pStart, int? pEnd,
+        int slideCount, int nativeW, int nativeH, ref int screenshotWidth, ref int screenshotHeight)
+    {
+        int htmlGridCols = gridColsResolved > 0 ? gridColsResolved
+            : (pStart.HasValue && pEnd.HasValue && pStart.Value != pEnd.Value ? 1 : 0);
+        if (htmlGridCols > 0)
+        {
+            const int pad = 24, gap = 12, maxDim = 1920;
+            int count = (pEnd ?? slideCount) - (pStart ?? 1) + 1;
+            int rows = Math.Max(1, (count + htmlGridCols - 1) / htmlGridCols);
+            double vpW = screenshotWidth == 1600 && screenshotHeight == 1200 && htmlGridCols == 1
+                ? nativeW + pad : screenshotWidth;
+            double cellW = Math.Max(1.0, (vpW - pad - (htmlGridCols - 1) * gap) / htmlGridCols);
+            double cellH = cellW * nativeH / nativeW;
+            double vpH = pad + rows * cellH + (rows - 1) * gap;
+            double over = Math.Max(vpW, vpH) / maxDim;
+            if (over > 1.0) { vpW /= over; vpH /= over; }
+            screenshotWidth = Math.Max(1, (int)Math.Round(vpW));
+            screenshotHeight = Math.Max(1, (int)Math.Ceiling(vpH));
+        }
+        else if (pStart == pEnd && gridCols == 0)
+        {
+            if (screenshotWidth == 1600 && screenshotHeight == 1200)
+                (screenshotWidth, screenshotHeight) = (nativeW, nativeH);
+            else if (screenshotHeight == 1200)
+                screenshotHeight = Math.Max(1, (int)Math.Round(screenshotWidth * (double)nativeH / nativeW));
+        }
+        return htmlGridCols;
+    }
+
+    internal const int DocxSheetGap = 12, DocxSheetPad = 12;
+
+    /// <summary>Does a docx screenshot request take the contact-sheet path?</summary>
+    internal static bool DocxWantsSheet(int gridCols, string? pageFilter)
+        => gridCols != 0 || IsMultiPageFilter(pageFilter);
+
+    internal sealed record DocxSheet(int Cols, int CellWpx, int CellHpx, int ViewportW, int ViewportH,
+        string NativePageSpec, OfficeCli.Core.Rendering.RenderOptions HtmlOptions);
+
+    /// <summary>
+    /// Column count, cell size, viewport and page selection for a docx contact
+    /// sheet. The page count needs a real layout pass (the preview publishes it
+    /// via &lt;title&gt;PAGES:N&gt;). The sheet is pre-capped to the 1920px
+    /// ceiling so cell size and viewport stay consistent; a one-column sheet at
+    /// the default dims keeps the page's native width before the cap.
+    /// </summary>
+    internal static DocxSheet DocxSheetLayout(OfficeCli.Handlers.WordHandler wordHandler, string? pageFilter, int gridCols,
+        int screenshotWidth, int screenshotHeight)
+    {
+        const int gap = DocxSheetGap, pad = DocxSheetPad, maxDim = 1920, scrollbar = 17;
+        var (npW, npH) = wordHandler.GetPageNativePixels();
+
+        int pageCount = 1;
+        var tmpForCount = Path.Combine(Path.GetTempPath(), $"officecli_gridcount_{Guid.NewGuid():N}.html");
+        try
+        {
+            File.WriteAllText(tmpForCount, RenderViaRegistry(wordHandler, "docx", new OfficeCli.Core.Rendering.RenderOptions())!);
+            pageCount = OfficeCli.Core.HtmlScreenshot.GetPageCountFromDom(tmpForCount) ?? 1;
+        }
+        catch { /* fall back to 1 row */ }
+        finally { try { File.Delete(tmpForCount); } catch { /* ignore */ } }
+
+        // Pages actually tiled: the --page selection clamped to the document,
+        // or every page when no filter was given.
+        var selectedPages = ParseDocxPageSelection(pageFilter, pageCount);
+        int tiled = selectedPages.Count > 0 ? selectedPages.Count : pageCount;
+        string nativePageSpec = selectedPages.Count > 0 ? string.Join(",", selectedPages) : $"1-{pageCount}";
+
+        // -1 = auto: columns that keep the sheet ≈ square; 0 (range without --grid) = one column.
+        int cols = gridCols < 0 ? OfficeCli.Core.HtmlScreenshot.AutoGridColumns(tiled, npW, npH)
+            : gridCols == 0 ? 1 : gridCols;
+        int rows = Math.Max(1, (tiled + cols - 1) / cols);
+
+        double vpW = screenshotWidth == 1600 && screenshotHeight == 1200 && cols == 1
+            ? npW + scrollbar + 2.0 * pad : screenshotWidth;
+        double cellW = Math.Max(1.0, (vpW - scrollbar - 2.0 * pad - (cols - 1) * gap) / cols);
+        double cellH = cellW * npH / npW;
+        double vpH = pad * 2 + rows * cellH + (rows - 1) * gap;
+        double over = Math.Max(vpW, vpH) / maxDim;
+        if (over > 1.0) { vpW /= over; cellW /= over; cellH /= over; vpH /= over; }
+
+        var html = new OfficeCli.Core.Rendering.RenderOptions
+        { PageFilter = selectedPages.Count > 0 ? pageFilter : null, GridColumns = cols, GridCellWidthPx = (int)Math.Round(cellW) };
+        return new DocxSheet(cols, (int)Math.Round(cellW), (int)Math.Round(cellH),
+            Math.Max(1, (int)Math.Round(vpW)), Math.Max(1, (int)Math.Ceiling(vpH)), nativePageSpec, html);
+    }
+
+    /// <summary>
+    /// Single docx page through the HTML path: size the viewport to the page's
+    /// 96-DPI native pixels (default dims) or aspect-match a custom width.
+    /// </summary>
+    internal static void DocxSinglePageViewport(OfficeCli.Handlers.WordHandler wordHandler, string? effectiveFilter, int gridCols,
+        ref int screenshotWidth, ref int screenshotHeight)
+    {
+        if (!int.TryParse(effectiveFilter, out _) || gridCols != 0) return;
+        var (nativeW, nativeH) = wordHandler.GetPageNativePixels();
+        if (screenshotWidth == 1600 && screenshotHeight == 1200)
+            (screenshotWidth, screenshotHeight) = (nativeW, nativeH);
+        else if (screenshotHeight == 1200)
+            screenshotHeight = Math.Max(1, (int)Math.Round(screenshotWidth * (double)nativeH / nativeW));
     }
 
     /// <summary>True when a --page filter names more than one page (a range or a list).</summary>

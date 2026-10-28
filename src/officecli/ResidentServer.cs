@@ -1671,52 +1671,29 @@ public class ResidentServer : IDisposable
                     throw OfficeCli.Core.NativeRenderFailure.ToCliException("PowerPoint", nativeFailure);
                 if (directPng == null)
                 {
+                    // Sheet (range / grid) and single-slide viewport sizing are the
+                    // standalone path's — CommandBuilder.PptHtmlScreenshotViewport.
+                    int htmlGridCols = CommandBuilder.PptHtmlScreenshotViewport(gridCols, pptGridCols, pStart, pEnd,
+                        pptShotHandler.GetSlideCount(), nativeW, nativeH, ref sw, ref sh);
                     html = CommandBuilder.RenderViaRegistry(pptShotHandler, "pptx", new OfficeCli.Core.Rendering.RenderOptions
-                    { StartPage = pStart, EndPage = pEnd, GridColumns = pptGridCols, ViewportPx = sw })!;
-                    // Single slide: size the viewport to the slide's 96-DPI native
-                    // pixels so the PNG is the slide, padding-free.
-                    if (pStart == pEnd && gridCols == 0)
-                    {
-                        if (sw == 1600 && sh == 1200) { sw = nativeW; sh = nativeH; }
-                        else if (sh == 1200) sh = Math.Max(1, (int)Math.Round(sw * (double)nativeH / nativeW));
-                    }
+                    { StartPage = pStart, EndPage = pEnd, GridColumns = htmlGridCols, ViewportPx = sw })!;
                 }
             }
             else if (_handler is OfficeCli.Handlers.ExcelHandler excelShotHandler)
                 html = CommandBuilder.RenderViaRegistry(excelShotHandler, "xlsx", new OfficeCli.Core.Rendering.RenderOptions { CellRange = rangeArg })!;
-            else if (_handler is OfficeCli.Handlers.WordHandler wordShotGrid && gridCols != 0)
+            else if (_handler is OfficeCli.Handlers.WordHandler wordShotGrid && CommandBuilder.DocxWantsSheet(gridCols, pageFilter))
             {
-                // Contact-sheet grid — mirrors CommandBuilder.View.cs's docx grid
-                // branch (native-first on Windows, HTML fallback; incl. -1 = auto).
-                const int gGap = 12, gPad = 12, gMaxDim = 1920, gScrollbar = 17;
-                var (gNpW, gNpH) = wordShotGrid.GetPageNativePixels();
-                int gPageCount = 1;
-                var gTmp = Path.Combine(Path.GetTempPath(), $"officecli_gridcount_{Path.GetFileNameWithoutExtension(_filePath)}_{Guid.NewGuid():N}.html");
-                try
-                {
-                    File.WriteAllText(gTmp, CommandBuilder.RenderViaRegistry(wordShotGrid, "docx", new OfficeCli.Core.Rendering.RenderOptions())!);
-                    gPageCount = OfficeCli.Core.HtmlScreenshot.GetPageCountFromDom(gTmp) ?? 1;
-                }
-                catch { /* fall back to 1 row */ }
-                finally { try { File.Delete(gTmp); } catch { /* ignore */ } }
-
-                int gCols = gridCols < 0 ? OfficeCli.Core.HtmlScreenshot.AutoGridColumns(gPageCount, gNpW, gNpH) : gridCols;
-                int gRows = Math.Max(1, (gPageCount + gCols - 1) / gCols);
-                double gVpW = sw;
-                double gCellW = Math.Max(1.0, (gVpW - gScrollbar - gPad * 2.0 - (gCols - 1) * gGap) / gCols);
-                double gCellH = gCellW * gNpH / gNpW;
-                double gVpH = gPad * 2 + gRows * gCellH + (gRows - 1) * gGap;
-                double gOver = Math.Max(gVpW, gVpH) / gMaxDim;
-                if (gOver > 1.0) { gVpW /= gOver; gCellW /= gOver; gCellH /= gOver; gVpH /= gOver; }
-
+                // Contact sheet (--grid, or a multi-page --page range) — the layout
+                // maths are the standalone path's (CommandBuilder.DocxSheetLayout).
                 // Native-first on Windows: release an editable write lock (blocks
                 // Word) before rendering, then reopen — same dance as the single-page
                 // branch below.
+                var sheet = CommandBuilder.DocxSheetLayout(wordShotGrid, pageFilter, gridCols, sw, sh);
                 OfficeCli.Core.NativeRenderFailure? nativeFailure = null;
                 if (renderMode != "html" && OperatingSystem.IsWindows())
                 {
                     if (_editable) _handler.Dispose();
-                    try { directPng = OfficeCli.Core.WordPdfBackend.RenderGrid(_filePath, $"1-{gPageCount}", (int)Math.Round(gCellW), (int)Math.Round(gCellH), gCols, gGap, gPad, out nativeFailure); }
+                    try { directPng = OfficeCli.Core.WordPdfBackend.RenderGrid(_filePath, sheet.NativePageSpec, sheet.CellWpx, sheet.CellHpx, sheet.Cols, CommandBuilder.DocxSheetGap, CommandBuilder.DocxSheetPad, out nativeFailure); }
                     catch (Exception ex) { directPng = null; nativeFailure = OfficeCli.Core.NativeRenderFailure.FromException(ex); }
                     if (_editable)
                     {
@@ -1728,10 +1705,8 @@ public class ResidentServer : IDisposable
                     throw OfficeCli.Core.NativeRenderFailure.ToCliException("Word", nativeFailure);
                 if (directPng == null)
                 {
-                    html = CommandBuilder.RenderViaRegistry(wordShotGrid, "docx", new OfficeCli.Core.Rendering.RenderOptions
-                    { GridColumns = gCols, GridCellWidthPx = (int)Math.Round(gCellW) })!;
-                    sw = Math.Max(1, (int)Math.Round(gVpW));
-                    sh = Math.Max(1, (int)Math.Ceiling(gVpH));
+                    html = CommandBuilder.RenderViaRegistry(wordShotGrid, "docx", sheet.HtmlOptions)!;
+                    (sw, sh) = (sheet.ViewportW, sheet.ViewportH);
                 }
             }
             else if (_handler is OfficeCli.Handlers.WordHandler wordShotHandler)
@@ -1757,8 +1732,12 @@ public class ResidentServer : IDisposable
                 }
                 if (renderMode == "native" && directPng == null)
                     throw OfficeCli.Core.NativeRenderFailure.ToCliException("Word", nativeFailure);
-                if (directPng == null) html = CommandBuilder.RenderViaRegistry(wordShotHandler, "docx",
-                    new OfficeCli.Core.Rendering.RenderOptions { PageFilter = effectiveFilter })!;
+                if (directPng == null)
+                {
+                    html = CommandBuilder.RenderViaRegistry(wordShotHandler, "docx",
+                        new OfficeCli.Core.Rendering.RenderOptions { PageFilter = effectiveFilter })!;
+                    CommandBuilder.DocxSinglePageViewport(wordShotHandler, effectiveFilter, gridCols, ref sw, ref sh);
+                }
             }
             if (html == null && directPng == null)
             {
