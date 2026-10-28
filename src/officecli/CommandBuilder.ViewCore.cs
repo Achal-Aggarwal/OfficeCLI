@@ -287,11 +287,16 @@ static partial class CommandBuilder
                 // A page past the end used to come back as a blank image with
                 // exit 0. Page 1 always exists; anything else is checked against
                 // the preview's page count.
-                if (int.TryParse(effectiveFilter, out var singlePage) && singlePage > 1)
+                // (`N` and the one-page range `N-N` both land here.)
+                var singleSel = ParseDocxPageSelection(effectiveFilter, int.MaxValue);
+                // Normalise `N-N` to `N` so the page is framed exactly like a
+                // bare page number (native-size viewport, no wrapper chrome).
+                if (singleSel.Count == 1) effectiveFilter = singleSel[0].ToString();
+                if (singleSel.Count == 1 && singleSel[0] > 1)
                 {
                     var total = DocxPreviewPageCount(wordHandler);
-                    if (total.HasValue && singlePage > total.Value)
-                        throw new OfficeCli.Core.CliException($"--page {singlePage} out of range (total pages: {total.Value}).") { Code = "out_of_range" };
+                    if (total.HasValue && singleSel[0] > total.Value)
+                        throw new OfficeCli.Core.CliException($"--page {singleSel[0]} out of range (total pages: {total.Value}).") { Code = "out_of_range" };
                 }
                 OfficeCli.Core.NativeRenderFailure? nativeFailure = null;
                 if (renderMode != "html" && OperatingSystem.IsWindows())
@@ -420,18 +425,14 @@ static partial class CommandBuilder
                 int slideNum = 1;
                 if (!string.IsNullOrEmpty(pageFilter))
                 {
-                    var firstTok = pageFilter.Split(',')[0].Split('-')[0].Trim();
-                    // CONSISTENCY(strict-page): reject non-positive --page
-                    // values explicitly instead of silently rendering
-                    // slide 1, mirroring how 0 / negatives are surfaced
-                    // elsewhere in the CLI.
-                    if (!int.TryParse(firstTok, out var p))
-                        throw new ArgumentException(
-                            $"Invalid --page value '{pageFilter}': expected a positive slide number.");
-                    if (p <= 0)
-                        throw new ArgumentException(
-                            $"Invalid --page value '{pageFilter}': slide number must be >= 1.");
-                    slideNum = p;
+                    // Same spec grammar and codes as html/screenshot; svg
+                    // renders exactly one slide, so a range is refused rather
+                    // than silently reduced to its first slide.
+                    var (svgStart, svgEnd) = ParsePptHtmlPage(pageFilter, null, null, pptSvgHandler);
+                    if (svgStart != svgEnd)
+                        throw new OfficeCli.Core.CliException($"Invalid --page value '{pageFilter}': svg renders a single slide.")
+                        { Code = "invalid_value", Suggestion = "Pass one slide number, or use screenshot/html for a range." };
+                    slideNum = svgStart ?? 1;
                 }
                 else if (start.HasValue && start.Value > 0)
                 {

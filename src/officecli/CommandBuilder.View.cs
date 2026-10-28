@@ -159,7 +159,8 @@ static partial class CommandBuilder
         if (string.IsNullOrWhiteSpace(spec)) return 0;
         spec = spec.Trim();
         if (spec.Equals("auto", StringComparison.OrdinalIgnoreCase)) return -1;
-        if (int.TryParse(spec, out var n) && n >= 0) return n;
+        // 0 is not a column count (it used to be accepted and silently turn the grid off).
+        if (int.TryParse(spec, out var n) && n >= 1) return n;
         throw new OfficeCli.Core.CliException($"Invalid --grid value: {spec}. Use a column count (e.g. 3) or 'auto'.")
         { Code = "invalid_value", ValidValues = ["auto", "1", "2", "3", "4"] };
     }
@@ -268,7 +269,8 @@ static partial class CommandBuilder
         // the last page is an error, not an empty sheet.
         ValidateDocxPageSpec(pageFilter);
         var selectedPages = ParseDocxPageSelection(pageFilter, pageCount);
-        if (!string.IsNullOrWhiteSpace(pageFilter) && selectedPages.Count == 0)
+        if (!string.IsNullOrWhiteSpace(pageFilter)
+            && (selectedPages.Count == 0 || ParseDocxPageSelection(pageFilter, int.MaxValue).Count != selectedPages.Count))
             throw new OfficeCli.Core.CliException($"--page {pageFilter} out of range (total pages: {pageCount}).") { Code = "out_of_range" };
         int tiled = selectedPages.Count > 0 ? selectedPages.Count : pageCount;
         string nativePageSpec = selectedPages.Count > 0 ? string.Join(",", selectedPages) : $"1-{pageCount}";
@@ -411,9 +413,9 @@ static partial class CommandBuilder
                 throw new OfficeCli.Core.CliException($"Invalid --page value '{pageFilter}': slide number must be >= 1.") { Code = "invalid_value" };
             if (pe < ps)
                 throw new OfficeCli.Core.CliException($"Invalid --page value '{pageFilter}': range end is before its start.") { Code = "invalid_value", Suggestion = $"Use --page {pe}-{ps}." };
-            if (ps > slideCount)
-                throw new OfficeCli.Core.CliException($"--page {ps} out of range (total slides: {slideCount}).") { Code = "out_of_range" };
-            return (ps, Math.Min(pe, slideCount));
+            if (ps > slideCount || pe > slideCount)
+                throw new OfficeCli.Core.CliException($"--page {pageFilter} out of range (total slides: {slideCount}).") { Code = "out_of_range" };
+            return (ps, pe);
         }
         if (!int.TryParse(spec, out var p))
             throw new OfficeCli.Core.CliException($"Invalid --page value '{pageFilter}': expected a positive slide number.") { Code = "invalid_value" };

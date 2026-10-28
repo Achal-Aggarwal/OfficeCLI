@@ -955,7 +955,12 @@ public class ResidentServer : IDisposable
             {
                 try { _handler.Dispose(); } catch { /* already unusable */ }
                 try { _handler = OfficeCli.Handlers.DocumentHandlerFactory.Open(_filePath, _editable); }
-                catch { /* the next command surfaces its own error */ }
+                catch
+                {
+                    // The file may be gone or unreadable right now: retry on the
+                    // next command instead of serving a disposed handler forever.
+                    _handlerNeedsReopen = true;
+                }
             }
             if (request?.Json == true)
             {
@@ -1125,9 +1130,18 @@ public class ResidentServer : IDisposable
         SetDirty(true);
     }
 
+    // Set when a reload after a corrupt-part error could not reopen the file;
+    // the next command retries the open (and reports its error if it fails).
+    private bool _handlerNeedsReopen;
+
     private void ExecuteCommand(ResidentRequest request)
     {
         var format = request.Json ? OutputFormat.Json : OutputFormat.Text;
+        if (_handlerNeedsReopen)
+        {
+            _handler = OfficeCli.Handlers.DocumentHandlerFactory.Open(_filePath, _editable);
+            _handlerNeedsReopen = false;
+        }
 
         switch (request.Command)
         {
