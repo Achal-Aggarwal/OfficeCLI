@@ -945,6 +945,18 @@ public class ResidentServer : IDisposable
                     $"Malformed XML in document part: {xe.Message} " +
                     $"(the file appears to have a corrupted OOXML part).", xe)
                 : ex;
+            // A part that failed to parse leaves the SDK package in a half-loaded
+            // state: every later command on this resident then failed with an
+            // unrelated "Specified argument was out of the range (Parameter 'id')"
+            // instead of the corruption message the direct path gives each time.
+            // Reload the document from disk so each command reports the real
+            // error; skipped when unsaved edits would be lost.
+            if (ex is System.Xml.XmlException && !_dirty)
+            {
+                try { _handler.Dispose(); } catch { /* already unusable */ }
+                try { _handler = OfficeCli.Handlers.DocumentHandlerFactory.Open(_filePath, _editable); }
+                catch { /* the next command surfaces its own error */ }
+            }
             if (request?.Json == true)
             {
                 // JSON mode: wrap error in envelope
