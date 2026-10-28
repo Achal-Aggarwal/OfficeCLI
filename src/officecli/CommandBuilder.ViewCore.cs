@@ -50,6 +50,26 @@ static partial class CommandBuilder
         var screenshotWidth = a.ScreenshotWidth; var screenshotHeight = a.ScreenshotHeight;
         var gridCols = a.GridCols; var renderMode = a.RenderMode; var withPages = a.WithPages;
 
+        // Line windows and limits are 1-based counts; zero, negatives and an
+        // inverted window used to be accepted and quietly produce nothing.
+        if (start is <= 0 || end is <= 0)
+            throw new OfficeCli.Core.CliException($"Invalid --start/--end: line numbers are 1-based and must be >= 1.") { Code = "invalid_value" };
+        if (start.HasValue && end.HasValue && end.Value < start.Value)
+            throw new OfficeCli.Core.CliException($"Invalid --start {start}/--end {end}: end is before start.") { Code = "invalid_value", Suggestion = $"Use --start {end} --end {start}." };
+        if (maxLines is <= 0)
+            throw new OfficeCli.Core.CliException("Invalid --max-lines: must be >= 1.") { Code = "invalid_value" };
+        if (limit is <= 0)
+            throw new OfficeCli.Core.CliException("Invalid --limit: must be >= 1.") { Code = "invalid_value" };
+        if (screenshotWidth <= 0 || screenshotHeight <= 0)
+            throw new OfficeCli.Core.CliException($"Invalid screenshot size {screenshotWidth}x{screenshotHeight}: width and height must be positive.")
+            { Code = "invalid_value", Suggestion = "Omit the options for the default size, or pass positive pixel values." };
+        // xlsx renders the active sheet; --page / --grid have no meaning there
+        // and were silently ignored.
+        if (handler is OfficeCli.Handlers.ExcelHandler && mode.ToLowerInvariant() is "html" or "h" or "screenshot" or "p"
+            && (!string.IsNullOrEmpty(pageFilter) || gridCols != 0))
+            throw new OfficeCli.Core.CliException("--page and --grid are not supported for xlsx (the active sheet is rendered).")
+            { Code = "invalid_value", Suggestion = "Use --range Sheet!A1:C3 to capture part of a sheet." };
+
         var format = json ? OutputFormat.Json : OutputFormat.Text;
         var cols = colsStr != null ? new HashSet<string>(colsStr.Split(',').Select(c => c.Trim().ToUpperInvariant())) : null;
 
@@ -70,8 +90,11 @@ static partial class CommandBuilder
             else if (handler is OfficeCli.Handlers.ExcelHandler)
                 html = RenderViaRegistry(handler, "xlsx", new OfficeCli.Core.Rendering.RenderOptions());
             else if (handler is OfficeCli.Handlers.WordHandler)
+            {
+                ValidateDocxPageSpec(pageFilter);
                 html = RenderViaRegistry(handler, "docx",
                     new OfficeCli.Core.Rendering.RenderOptions { PageFilter = pageFilter });
+            }
             else if (handler is OfficeCli.Core.Plugins.FormatHandlerProxy proxy)
                 html = proxy.ViewAsHtml(int.TryParse(pageFilter, out var p) ? p : (int?)null);
 
@@ -106,7 +129,7 @@ static partial class CommandBuilder
                 {
                     // Default: output HTML to stdout (--json: in the read envelope).
                     if (json) Console.WriteLine(OutputFormatter.WrapEnvelopeText(html));
-                    else Console.Write(html);
+                    else Console.WriteLine(html.TrimEnd('\r', '\n')); // exactly one trailing newline, as the resident returns it
                 }
             }
             else
@@ -260,6 +283,16 @@ static partial class CommandBuilder
                 var effectiveFilter = clipArg != null
                     ? pageFilter
                     : (string.IsNullOrEmpty(pageFilter) ? "1" : pageFilter);
+                ValidateDocxPageSpec(effectiveFilter);
+                // A page past the end used to come back as a blank image with
+                // exit 0. Page 1 always exists; anything else is checked against
+                // the preview's page count.
+                if (int.TryParse(effectiveFilter, out var singlePage) && singlePage > 1)
+                {
+                    var total = DocxPreviewPageCount(wordHandler);
+                    if (total.HasValue && singlePage > total.Value)
+                        throw new OfficeCli.Core.CliException($"--page {singlePage} out of range (total pages: {total.Value}).") { Code = "out_of_range" };
+                }
                 OfficeCli.Core.NativeRenderFailure? nativeFailure = null;
                 if (renderMode != "html" && OperatingSystem.IsWindows())
                 {
@@ -362,7 +395,10 @@ static partial class CommandBuilder
                 }
             }
             EmitPathOrText(Path.GetFullPath(pngPath), json);
-            if (handler is OfficeCli.Handlers.PowerPointHandler pptCount)
+            // Informational slide count on stderr in text mode only: under
+            // --json the resident would turn the line into a warning the direct
+            // path does not have.
+            if (!json && handler is OfficeCli.Handlers.PowerPointHandler pptCount)
                 Console.Error.WriteLine($"[pages] total={pptCount.GetSlideCount()}");
             if (browser)
             {
@@ -436,7 +472,7 @@ static partial class CommandBuilder
                 else
                 {
                     if (json) Console.WriteLine(OutputFormatter.WrapEnvelopeText(svg));
-                    else Console.Write(svg);
+                    else Console.WriteLine(svg.TrimEnd('\r', '\n'));
                 }
             }
             else if (handler is OfficeCli.Core.Plugins.FormatHandlerProxy svgProxy)
@@ -466,7 +502,7 @@ static partial class CommandBuilder
                 else
                 {
                     if (json) Console.WriteLine(OutputFormatter.WrapEnvelopeText(svg));
-                    else Console.Write(svg);
+                    else Console.WriteLine(svg.TrimEnd('\r', '\n'));
                 }
             }
             else
@@ -545,7 +581,7 @@ static partial class CommandBuilder
                     };
             }
             else
-                throw new OfficeCli.Core.CliException($"Unknown mode: {mode}. Available: text, annotated, outline, stats, issues, html, svg, screenshot, forms")
+                throw new OfficeCli.Core.CliException($"Unknown mode: {mode}. Available: text, annotated, outline, stats, issues, html, svg, screenshot, pdf, forms")
                 {
                     Code = "invalid_value",
                     ValidValues = ["text", "annotated", "outline", "stats", "issues", "html", "svg", "screenshot", "pdf", "forms"]
@@ -575,13 +611,15 @@ static partial class CommandBuilder
                         ValidValues = ["text", "annotated", "outline", "stats", "issues", "html", "svg", "screenshot", "pdf", "forms"]
                     }
                 },
-                _ => throw new OfficeCli.Core.CliException($"Unknown mode: {mode}. Available: text, annotated, outline, stats, issues, html, svg, screenshot, forms")
+                _ => throw new OfficeCli.Core.CliException($"Unknown mode: {mode}. Available: text, annotated, outline, stats, issues, html, svg, screenshot, pdf, forms")
                 {
                     Code = "invalid_value",
                     ValidValues = ["text", "annotated", "outline", "stats", "issues", "html", "svg", "screenshot", "pdf", "forms"]
                 }
             };
-            Console.WriteLine(output);
+            // An empty view (e.g. --start past the end) prints nothing rather
+            // than a lone blank line, on both paths.
+            if (output.Length > 0) Console.WriteLine(output);
         }
         return 0;
     }

@@ -126,7 +126,9 @@ static partial class CommandBuilder
                 if (colsStr != null) req.Args["cols"] = colsStr;
                 if (pageFilter != null) req.Args["page"] = pageFilter;
                 if (browser) req.Args["browser"] = "true";
-                if (outArg != null) req.Args["out"] = outArg;
+                // Absolute: the resident resolves relative paths against ITS
+                // working directory, not the caller's.
+                if (outArg != null) req.Args["out"] = Path.GetFullPath(outArg);
                 if (clipArg != null) req.Args["range"] = clipArg;
                 req.Args["screenshot-width"] = screenshotWidth.ToString();
                 req.Args["screenshot-height"] = screenshotHeight.ToString();
@@ -259,19 +261,15 @@ static partial class CommandBuilder
         const int gap = DocxSheetGap, pad = DocxSheetPad, maxDim = 1920, scrollbar = 17;
         var (npW, npH) = wordHandler.GetPageNativePixels();
 
-        int pageCount = 1;
-        var tmpForCount = Path.Combine(Path.GetTempPath(), $"officecli_gridcount_{Guid.NewGuid():N}.html");
-        try
-        {
-            File.WriteAllText(tmpForCount, RenderViaRegistry(wordHandler, "docx", new OfficeCli.Core.Rendering.RenderOptions())!);
-            pageCount = OfficeCli.Core.HtmlScreenshot.GetPageCountFromDom(tmpForCount) ?? 1;
-        }
-        catch { /* fall back to 1 row */ }
-        finally { try { File.Delete(tmpForCount); } catch { /* ignore */ } }
+        int pageCount = DocxPreviewPageCount(wordHandler) ?? 1;
 
         // Pages actually tiled: the --page selection clamped to the document,
-        // or every page when no filter was given.
+        // or every page when no filter was given. A selection that starts past
+        // the last page is an error, not an empty sheet.
+        ValidateDocxPageSpec(pageFilter);
         var selectedPages = ParseDocxPageSelection(pageFilter, pageCount);
+        if (!string.IsNullOrWhiteSpace(pageFilter) && selectedPages.Count == 0)
+            throw new OfficeCli.Core.CliException($"--page {pageFilter} out of range (total pages: {pageCount}).") { Code = "out_of_range" };
         int tiled = selectedPages.Count > 0 ? selectedPages.Count : pageCount;
         string nativePageSpec = selectedPages.Count > 0 ? string.Join(",", selectedPages) : $"1-{pageCount}";
 
@@ -318,6 +316,53 @@ static partial class CommandBuilder
     }
 
     /// <summary>
+    /// Reject a malformed docx --page spec up front (non-numeric, zero or
+    /// negative pages, a range whose end precedes its start) instead of
+    /// rendering every page or a blank page with exit 0.
+    /// </summary>
+    internal static void ValidateDocxPageSpec(string? pageFilter)
+    {
+        if (string.IsNullOrWhiteSpace(pageFilter)) return;
+        foreach (var part in pageFilter.Split(','))
+        {
+            var t = part.Trim();
+            if (t.Length == 0)
+                throw new OfficeCli.Core.CliException($"Invalid --page value '{pageFilter}': empty list item.") { Code = "invalid_value" };
+            if (t.Contains('-'))
+            {
+                var r = t.Split('-', 2);
+                if (!int.TryParse(r[0].Trim(), out var from) || !int.TryParse(r[1].Trim(), out var to))
+                    throw new OfficeCli.Core.CliException($"Invalid --page value '{pageFilter}': expected N, M-N or a comma list.") { Code = "invalid_value" };
+                if (from <= 0 || to <= 0)
+                    throw new OfficeCli.Core.CliException($"Invalid --page value '{pageFilter}': page number must be >= 1.") { Code = "invalid_value" };
+                if (to < from)
+                    throw new OfficeCli.Core.CliException($"Invalid --page value '{pageFilter}': range end is before its start.") { Code = "invalid_value", Suggestion = $"Use --page {to}-{from}." };
+            }
+            else if (!int.TryParse(t, out var n))
+                throw new OfficeCli.Core.CliException($"Invalid --page value '{pageFilter}': expected a positive page number.") { Code = "invalid_value" };
+            else if (n <= 0)
+                throw new OfficeCli.Core.CliException($"Invalid --page value '{pageFilter}': page number must be >= 1.") { Code = "invalid_value" };
+        }
+    }
+
+    /// <summary>
+    /// Page count of a docx as the HTML preview paginates it (a real layout
+    /// pass; the preview publishes the count via &lt;title&gt;PAGES:N&gt;).
+    /// Null when the count could not be read.
+    /// </summary>
+    internal static int? DocxPreviewPageCount(OfficeCli.Handlers.WordHandler wordHandler)
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), $"officecli_gridcount_{Guid.NewGuid():N}.html");
+        try
+        {
+            File.WriteAllText(tmp, RenderViaRegistry(wordHandler, "docx", new OfficeCli.Core.Rendering.RenderOptions())!);
+            return OfficeCli.Core.HtmlScreenshot.GetPageCountFromDom(tmp);
+        }
+        catch { return null; }
+        finally { try { File.Delete(tmp); } catch { /* ignore */ } }
+    }
+
+    /// <summary>
     /// Expand a docx --page filter ("1", "2-5", "1,3,5", "2-4,7") into the
     /// sorted distinct pages within 1..total. Unparsable parts are ignored,
     /// matching the preview's own lenient filter.
@@ -350,25 +395,32 @@ static partial class CommandBuilder
     {
         if (string.IsNullOrEmpty(pageFilter)) return (start, end);
         var slideCount = pptHandler.Query("slide").Count;
-        var firstTok = pageFilter.Split(',')[0].Trim();
+        var spec = pageFilter.Trim();
+        // A comma list cannot be rendered as one contiguous slide run; refuse
+        // it instead of silently showing only the first item.
+        if (spec.Contains(','))
+            throw new OfficeCli.Core.CliException($"Invalid --page value '{pageFilter}': pptx takes a single slide (N) or a contiguous range (M-N), not a list.")
+            { Code = "invalid_value", Suggestion = "Use --page M-N, or run one command per slide." };
         // Range form "M-N"
-        if (firstTok.Contains('-'))
+        if (spec.Contains('-'))
         {
-            var parts = firstTok.Split('-', 2);
-            if (!int.TryParse(parts[0], out var ps) || !int.TryParse(parts[1], out var pe))
-                throw new ArgumentException($"Invalid --page value '{pageFilter}': expected N or M-N or comma list.");
+            var parts = spec.Split('-', 2);
+            if (!int.TryParse(parts[0].Trim(), out var ps) || !int.TryParse(parts[1].Trim(), out var pe))
+                throw new OfficeCli.Core.CliException($"Invalid --page value '{pageFilter}': expected N or M-N.") { Code = "invalid_value" };
             if (ps <= 0 || pe <= 0)
-                throw new ArgumentException($"Invalid --page value '{pageFilter}': slide number must be >= 1.");
+                throw new OfficeCli.Core.CliException($"Invalid --page value '{pageFilter}': slide number must be >= 1.") { Code = "invalid_value" };
+            if (pe < ps)
+                throw new OfficeCli.Core.CliException($"Invalid --page value '{pageFilter}': range end is before its start.") { Code = "invalid_value", Suggestion = $"Use --page {pe}-{ps}." };
             if (ps > slideCount)
-                throw new ArgumentException($"--page {ps} out of range (total slides: {slideCount}).");
+                throw new OfficeCli.Core.CliException($"--page {ps} out of range (total slides: {slideCount}).") { Code = "out_of_range" };
             return (ps, Math.Min(pe, slideCount));
         }
-        if (!int.TryParse(firstTok, out var p))
-            throw new ArgumentException($"Invalid --page value '{pageFilter}': expected a positive slide number.");
+        if (!int.TryParse(spec, out var p))
+            throw new OfficeCli.Core.CliException($"Invalid --page value '{pageFilter}': expected a positive slide number.") { Code = "invalid_value" };
         if (p <= 0)
-            throw new ArgumentException($"Invalid --page value '{pageFilter}': slide number must be >= 1.");
+            throw new OfficeCli.Core.CliException($"Invalid --page value '{pageFilter}': slide number must be >= 1.") { Code = "invalid_value" };
         if (p > slideCount)
-            throw new ArgumentException($"--page {p} out of range (total slides: {slideCount}).");
+            throw new OfficeCli.Core.CliException($"--page {p} out of range (total slides: {slideCount}).") { Code = "out_of_range" };
         return (p, p);
     }
 }
